@@ -1,0 +1,2 @@
+streamlit
+gradio_client>=0.6.0
