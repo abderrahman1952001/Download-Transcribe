@@ -157,3 +157,10 @@ with tab_ocr:
                 present_files(files)
             except Exception as e:
                 st.error(str(e))
+
+# Not all versions expose this, but try:
+try:
+    st.sidebar.json(client.view_api())
+except Exception:
+    pass
+
