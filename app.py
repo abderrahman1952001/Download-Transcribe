@@ -1,7 +1,4 @@
-
-# app.py — Streamlit client for the Colab backend
-# - Paste the backend's *.gradio.live URL in the sidebar
-# - Pick a tool and run it; results show inline or as direct links
+# app.py — Streamlit client (robust api_name resolution)
 import io
 import os
 import time
@@ -12,9 +9,6 @@ from gradio_client import Client, file as gradio_file
 
 st.set_page_config(page_title="Media Toolkit", layout="wide")
 
-# ------------------------------
-# Helpers
-# ------------------------------
 def ensure_client(url: str) -> Client:
     url = (url or "").strip().rstrip("/")
     if not url:
@@ -29,13 +23,11 @@ def present_files(paths):
         return
     for p in paths:
         if isinstance(p, dict) and "url" in p:
-            # gradio_client may return { 'url': ..., 'name': ... }
             url = p["url"]; name = p.get("name") or os.path.basename(url)
             st.write(f"• [{name}]({url})")
         elif isinstance(p, str) and p.startswith("http"):
             name = os.path.basename(p.split("?")[0])
             st.write(f"• [{name}]({p})")
-            # small convenience: try to let user download inside Streamlit if <40MB
             try:
                 with st.spinner("Fetching bytes…"):
                     r = requests.get(p, stream=True, timeout=120)
@@ -48,12 +40,20 @@ def present_files(paths):
             except Exception:
                 pass
         else:
-            # Non-HTTP path (e.g., Colab /content or Drive path)
             st.code(str(p))
 
-# ------------------------------
-# Sidebar
-# ------------------------------
+def call_backend(client: Client, api: str, *args):
+    # Tries without and with leading slash for maximum compatibility
+    names = [api.lstrip("/"), "/" + api.lstrip("/")]
+    last_exc = None
+    for n in names:
+        try:
+            return client.predict(*args, api_name=n)
+        except Exception as e:
+            last_exc = e
+    # Raise the last error so the user can see it
+    raise last_exc
+
 st.sidebar.header("Backend")
 backend_url = st.sidebar.text_input("Paste your Colab public URL (https://xxxx.gradio.live)", value="")
 connected = False
@@ -70,9 +70,6 @@ st.title("🎛️ Media Toolkit — Client")
 
 tab_dl, tab_tr, tab_ocr = st.tabs(["Download", "Transcribe", "OCR"])
 
-# ------------------------------
-# Download Tab
-# ------------------------------
 with tab_dl:
     st.subheader("Download (YouTube/video/audio)")
     url_or_id = st.text_input("URL or ID", placeholder="YouTube URL or ID…")
@@ -88,21 +85,18 @@ with tab_dl:
         else:
             try:
                 with st.spinner("Calling backend…"):
-                    log, files = client.predict(
+                    log, files = call_backend(
+                        client, "download",
                         url_or_id.strip(),
                         processing,
                         output_kind,
                         dest_choice,
-                        api_name="/download",
                     )
                 st.text_area("Log", value=log, height=220)
                 present_files(files)
             except Exception as e:
                 st.error(str(e))
 
-# ------------------------------
-# Transcribe Tab
-# ------------------------------
 with tab_tr:
     st.subheader("Transcribe (Whisper large-v3, chunked)")
     url_or_id_tr = st.text_input("URL or ID (audio/video)", placeholder="YouTube URL or ID…", key="tr_url")
@@ -119,22 +113,19 @@ with tab_tr:
         else:
             try:
                 with st.spinner("Calling backend…"):
-                    log, files = client.predict(
+                    log, files = call_backend(
+                        client, "transcribe",
                         url_or_id_tr.strip(),
                         language.strip(),
                         bool(translate),
                         bool(save_raw_txt),
                         dest_choice,
-                        api_name="/transcribe",
                     )
                 st.text_area("Log", value=log, height=220)
                 present_files(files)
             except Exception as e:
                 st.error(str(e))
 
-# ------------------------------
-# OCR Tab
-# ------------------------------
 with tab_ocr:
     st.subheader("OCR (Arabic PDF → polished DOCX)")
     pdf = st.file_uploader("Upload PDF", type=["pdf"], accept_multiple_files=False)
@@ -151,17 +142,16 @@ with tab_ocr:
         else:
             try:
                 with st.spinner("Uploading & calling backend…"):
-                    # Save to temp file for gradio_client
                     tmp_path = os.path.join(os.getcwd(), f"_upload_{int(time.time())}.pdf")
                     with open(tmp_path, "wb") as f:
                         f.write(pdf.read())
-                    log, files = client.predict(
+                    log, files = call_backend(
+                        client, "ocr",
                         gradio_file(tmp_path),
                         int(dpi),
                         int(batch_pages),
                         bool(fix_punct),
                         dest_choice,
-                        api_name="/ocr",
                     )
                 st.text_area("Log", value=log, height=220)
                 present_files(files)
