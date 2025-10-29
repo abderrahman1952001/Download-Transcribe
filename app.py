@@ -1,146 +1,169 @@
-import streamlit as st
-from gradio_client import Client
-import json
+
+# app.py — Streamlit client for the Colab backend
+# - Paste the backend's *.gradio.live URL in the sidebar
+# - Pick a tool and run it; results show inline or as direct links
+import io
+import os
 import time
+import requests
+import streamlit as st
+from urllib.parse import urlsplit
+from gradio_client import Client, file as gradio_file
 
-st.set_page_config(page_title="🎧 Downloader / Transcriber — Streamlit UI")
+st.set_page_config(page_title="Media Toolkit", layout="wide")
 
-st.title("🎧 Downloader / Transcriber — Streamlit UI")
-st.caption("Connect to your running Colab Gradio backend and call its named API endpoints.")
+# ------------------------------
+# Helpers
+# ------------------------------
+def ensure_client(url: str) -> Client:
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        raise ValueError("Backend URL is empty.")
+    p = urlsplit(url)
+    base = f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else url
+    return Client(base)
 
-backend_url = st.text_input("Gradio backend URL", placeholder="https://xxxxx.gradio.live/")
-connect = st.button("Connect / Refresh endpoints")
+def present_files(paths):
+    if not paths:
+        st.info("No files returned.")
+        return
+    for p in paths:
+        if isinstance(p, dict) and "url" in p:
+            # gradio_client may return { 'url': ..., 'name': ... }
+            url = p["url"]; name = p.get("name") or os.path.basename(url)
+            st.write(f"• [{name}]({url})")
+        elif isinstance(p, str) and p.startswith("http"):
+            name = os.path.basename(p.split("?")[0])
+            st.write(f"• [{name}]({p})")
+            # small convenience: try to let user download inside Streamlit if <40MB
+            try:
+                with st.spinner("Fetching bytes…"):
+                    r = requests.get(p, stream=True, timeout=120)
+                    r.raise_for_status()
+                    data = r.content if len(r.content) < 40_000_000 else None
+                if data:
+                    st.download_button("Download via Streamlit", data=data, file_name=name, key=f"dl_{name}")
+                else:
+                    st.caption("Large file: use the link above.")
+            except Exception:
+                pass
+        else:
+            # Non-HTTP path (e.g., Colab /content or Drive path)
+            st.code(str(p))
 
-if "client" not in st.session_state:
-    st.session_state.client = None
-if "apis" not in st.session_state:
-    st.session_state.apis = {}
-
-def fetch_api_map(client: Client):
-    """
-    Returns: dict name->fn_index from client.view_api_info()
-    """
-    info = client.view_api_info()  # dict with 'named_endpoints'
-    apis = {}
+# ------------------------------
+# Sidebar
+# ------------------------------
+st.sidebar.header("Backend")
+backend_url = st.sidebar.text_input("Paste your Colab public URL (https://xxxx.gradio.live)", value="")
+connected = False
+client = None
+if backend_url.strip():
     try:
-        named = info.get("named_endpoints") or {}
-        for name, meta in named.items():
-            # Normalize both "download" and "/download" to the same key for matching
-            clean = name.strip()
-            apis[clean] = meta.get("fn_index")
-            # also register variant without leading slash
-            if clean.startswith("/"):
-                apis[clean[1:]] = meta.get("fn_index")
-            else:
-                apis["/" + clean] = meta.get("fn_index")
-    except Exception:
-        pass
-    return apis
-
-def require_connection():
-    if not st.session_state.client:
-        st.error("Connect to the backend first.")
-        st.stop()
-
-if connect and backend_url.strip():
-    try:
-        st.session_state.client = Client(backend_url.strip())
-        st.session_state.apis = fetch_api_map(st.session_state.client)
-        st.success(f"Connected. Found endpoints: {', '.join(sorted(st.session_state.apis.keys())) or 'none'}")
+        client = ensure_client(backend_url)
+        connected = True
+        st.sidebar.success("Connected ✅")
     except Exception as e:
-        st.session_state.client = None
-        st.session_state.apis = {}
-        st.error(f"Connection failed: {e}")
+        st.sidebar.error(f"Connection failed: {e}")
 
-st.write("---")
-tab_dl, tab_tr, tab_ocr = st.tabs(["⬇️ Download", "🗣️ Transcribe", "📄 OCR PDF"])
+st.title("🎛️ Media Toolkit — Client")
 
-def call_named(api_preferred_list, **kwargs):
-    """
-    Try preferred names, then fallback by fuzzy lookup.
-    """
-    client = st.session_state.client
-    apis = st.session_state.apis
-    # First pass: try exact preferred names
-    for name in api_preferred_list:
-        if name in apis:
-            return client.predict(api_name=name, **kwargs)
-    # Second pass: heuristic pick (e.g., find 'download' substring)
-    for key in apis.keys():
-        if api_preferred_list[0].strip("/").lower() in key.strip("/").lower():
-            return client.predict(api_name=key, **kwargs)
-    # Last resort: call first function index
-    if apis:
-        some_name = next(iter(apis.keys()))
-        return client.predict(api_name=some_name, **kwargs)
-    raise RuntimeError("No named endpoints found on backend.")
+tab_dl, tab_tr, tab_ocr = st.tabs(["Download", "Transcribe", "OCR"])
 
+# ------------------------------
+# Download Tab
+# ------------------------------
 with tab_dl:
-    st.subheader("Download video / audio (supports playlists)")
-    url = st.text_input("YouTube URL or ID (playlist or single)")
-    processing = st.selectbox("Processing", ["None", "Remove music (voice-only)"], index=0)
-    kind = st.selectbox("Output kind", ["Video","Audio"], index=0)
-    dest = st.selectbox("Destination", ["Local","Drive"], index=0)
-    if st.button("Start download"):
-        require_connection()
-        try:
-            paths = call_named(
-                ["/download","download"],
-                url_or_id=url,
-                processing=processing,
-                output_kind=kind,
-                destination=dest,
-            )
-            st.success("Done.")
-            st.json(paths)
-        except Exception as e:
-            st.error(f"Download failed: {e}")
+    st.subheader("Download (YouTube/video/audio)")
+    url_or_id = st.text_input("URL or ID", placeholder="YouTube URL or ID…")
+    processing = st.selectbox("Processing", ["None", "Remove music (voice-only)"])
+    output_kind = st.selectbox("Output", ["Video (best available)", "Audio only (best available)"])
+    dest_choice = st.selectbox("Destination", ["Here", "Drive"])
 
+    if st.button("Run download", type="primary", disabled=not connected):
+        if not connected:
+            st.warning("Paste a backend URL first.")
+        elif not url_or_id.strip():
+            st.warning("Enter a URL or ID.")
+        else:
+            try:
+                with st.spinner("Calling backend…"):
+                    log, files = client.predict(
+                        url_or_id.strip(),
+                        processing,
+                        output_kind,
+                        dest_choice,
+                        api_name="/download",
+                    )
+                st.text_area("Log", value=log, height=220)
+                present_files(files)
+            except Exception as e:
+                st.error(str(e))
+
+# ------------------------------
+# Transcribe Tab
+# ------------------------------
 with tab_tr:
-    st.subheader("Transcribe by URL/ID")
-    url_t = st.text_input("YouTube URL or ID", key="tr_url")
-    lang = st.text_input("Language ('' or 'auto' to let model decide)", value="ar")
+    st.subheader("Transcribe (Whisper large-v3, chunked)")
+    url_or_id_tr = st.text_input("URL or ID (audio/video)", placeholder="YouTube URL or ID…", key="tr_url")
+    language = st.text_input("Language code (e.g., ar, en). Use 'ar' or leave blank for auto.", value="ar")
     translate = st.checkbox("Translate to English", value=False)
-    rawtxt = st.checkbox("Also save raw .txt", value=False)
-    dest_t = st.selectbox("Destination", ["Local","Drive"], index=0, key="dest_tr")
-    if st.button("Start transcription"):
-        require_connection()
-        try:
-            paths = call_named(
-                ["/transcribe","transcribe"],
-                url_or_id=url_t,
-                language=lang,
-                translate=translate,
-                save_raw_txt=rawtxt,
-                destination=dest_t,
-            )
-            st.success("Done.")
-            st.json(paths)
-        except Exception as e:
-            st.error(f"Transcription failed: {e}")
+    save_raw_txt = st.checkbox("Also save raw TXT", value=False)
+    dest_choice = st.selectbox("Destination", ["Here", "Drive"], key="tr_dest")
 
+    if st.button("Run transcribe", type="primary", disabled=not connected):
+        if not connected:
+            st.warning("Paste a backend URL first.")
+        elif not url_or_id_tr.strip():
+            st.warning("Enter a URL or ID.")
+        else:
+            try:
+                with st.spinner("Calling backend…"):
+                    log, files = client.predict(
+                        url_or_id_tr.strip(),
+                        language.strip(),
+                        bool(translate),
+                        bool(save_raw_txt),
+                        dest_choice,
+                        api_name="/transcribe",
+                    )
+                st.text_area("Log", value=log, height=220)
+                present_files(files)
+            except Exception as e:
+                st.error(str(e))
+
+# ------------------------------
+# OCR Tab
+# ------------------------------
 with tab_ocr:
-    st.subheader("OCR a PDF (Arabic-aware, smart paragraphs)")
-    uploaded = st.file_uploader("PDF file", type=["pdf"])
-    dpi = st.slider("DPI", 100, 500, 300, step=25)
-    fix = st.checkbox("Polish Arabic punctuation/paragraphs", value=True)
-    dest_o = st.selectbox("Destination", ["Local","Drive"], index=0, key="dest_ocr")
-    if st.button("Start OCR"):
-        require_connection()
-        if not uploaded:
+    st.subheader("OCR (Arabic PDF → polished DOCX)")
+    pdf = st.file_uploader("Upload PDF", type=["pdf"], accept_multiple_files=False)
+    dpi = st.slider("DPI", min_value=150, max_value=400, value=300, step=50)
+    batch_pages = st.slider("Batch pages", min_value=10, max_value=120, value=40, step=10)
+    fix_punct = st.checkbox("Fix Arabic punctuation & paragraphing", value=True)
+    dest_choice = st.selectbox("Destination", ["Here", "Drive"], key="ocr_dest")
+
+    if st.button("Run OCR", type="primary", disabled=not connected):
+        if not connected:
+            st.warning("Paste a backend URL first.")
+        elif not pdf:
             st.warning("Upload a PDF first.")
         else:
             try:
-                # gradio_client expects ('pdf_file',) style tuple for file
-                paths = call_named(
-                    ["/ocr","ocr"],
-                    pdf_file=uploaded,
-                    dpi=int(dpi),
-                    batch_pages=False,
-                    fix_punct=bool(fix),
-                    destination=dest_o,
-                )
-                st.success("Done.")
-                st.json(paths)
+                with st.spinner("Uploading & calling backend…"):
+                    # Save to temp file for gradio_client
+                    tmp_path = os.path.join(os.getcwd(), f"_upload_{int(time.time())}.pdf")
+                    with open(tmp_path, "wb") as f:
+                        f.write(pdf.read())
+                    log, files = client.predict(
+                        gradio_file(tmp_path),
+                        int(dpi),
+                        int(batch_pages),
+                        bool(fix_punct),
+                        dest_choice,
+                        api_name="/ocr",
+                    )
+                st.text_area("Log", value=log, height=220)
+                present_files(files)
             except Exception as e:
-                st.error(f"OCR failed: {e}")
+                st.error(str(e))
