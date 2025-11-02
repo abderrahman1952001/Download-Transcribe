@@ -1,11 +1,11 @@
 
-# Streamlit Client (FINAL-4)
+# Streamlit Clien
 import os, time, urllib.parse
 from urllib.parse import urlsplit
 import streamlit as st
 from gradio_client import Client, file as gradio_file
 
-st.set_page_config(page_title="Media Toolkit Client", layout="wide")
+st.set_page_config(page_title="Media Toolkit", layout="wide")
 st.markdown(
     "<style>.reportview-container .main .block-container{padding-top:1rem; padding-bottom:2rem; max-width: 1200px;} h1,h2,h3{font-weight:700} .stButton>button{border-radius:10px;padding:.5rem 1rem} hr{margin:1.2rem 0}</style>",
     unsafe_allow_html=True
