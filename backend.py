@@ -399,6 +399,34 @@ def ocr_pdf_to_docx(src_pdf: str, out_dir: str, dpi=300, batch_pages=40, summary
     if not text.strip():
         import numpy as np, cv2, easyocr
         from pdf2image import convert_from_path
+
+        def ensure_poppler(summary: list) -> bool:
+            def has_pdftoppm():
+                try:
+                    code, _ = run(["pdftoppm", "-v"])
+                    return code == 0
+                except FileNotFoundError:
+                    return False
+                except Exception:
+                    return False
+
+            if has_pdftoppm():
+                return True
+
+            try:
+                import google.colab  # type: ignore
+                summary.append("Installing poppler-utils for OCR…")
+                run(["apt-get", "update", "-qq"], capture=False)
+                run(["apt-get", "install", "-y", "poppler-utils"], capture=False)
+                if has_pdftoppm():
+                    summary.append("poppler-utils installed.")
+                    return True
+            except Exception:
+                pass
+
+            raise RuntimeError("Poppler (pdftoppm) is required for OCR. Install poppler-utils (e.g., `sudo apt-get install -y poppler-utils`) and retry.")
+
+        ensure_poppler(summary)
         total_pages = None
         try:
             from pdf2image import pdfinfo_from_path
